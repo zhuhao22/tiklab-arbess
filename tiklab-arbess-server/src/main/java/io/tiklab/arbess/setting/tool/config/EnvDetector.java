@@ -7,6 +7,8 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class EnvDetector {
 
@@ -241,27 +243,46 @@ public class EnvDetector {
     }
 
     public static ToolInfo detectKubectl() {
+        Pattern gitVersionPattern = Pattern.compile("(?i)GitVersion\\s*:\\s*\"?([^\",}\\s]+)");
+        Pattern clientVersionPattern = Pattern.compile("(?i)^\\s*Client Version\\s*:\\s*(\\S+)");
+
         try {
-            // 执行 kubectl version --client --short 获取版本
-            ProcessBuilder builder = new ProcessBuilder("kubectl", "version", "--client", "--short");
+            ProcessBuilder builder = new ProcessBuilder("kubectl", "version", "--client");
             builder.redirectErrorStream(true);
             Process process = builder.start();
+            String version = null;
 
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line = reader.readLine();
-                if (line != null && line.toLowerCase().contains("client version")) {
-                    // 输出示例：Client Version: v1.28.1
-                    String version = line.split(":")[1].trim();
-                    String path = getCommandPath("kubectl");
-                    return new ToolInfo(true, version, path);
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    if (version == null) {
+                        Matcher gitVersionMatcher = gitVersionPattern.matcher(line);
+                        if (gitVersionMatcher.find()) {
+                            version = gitVersionMatcher.group(1);
+                            break;
+                        }
+
+                        Matcher clientVersionMatcher = clientVersionPattern.matcher(line);
+                        if (clientVersionMatcher.find()) {
+                            version = clientVersionMatcher.group(1);
+                            break;
+                        }
+                    }
                 }
             }
 
-            process.waitFor();
-        } catch (IOException | InterruptedException ignored) {}
+            int exitCode = process.waitFor();
+            if (exitCode == 0 && version != null && !version.isEmpty()) {
+                return new ToolInfo(true, version, getCommandPath("kubectl"));
+            }
+        } catch (IOException ignored) {
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
 
         return new ToolInfo(false, null, null);
     }
+
     /** 跨平台检测 Python 安装状态 */
     private static ToolInfo detectPython() {
         List<String[]> commands = Arrays.asList(
@@ -291,12 +312,8 @@ public class EnvDetector {
                     new InputStreamReader(process.getInputStream()))) {
                 String output = reader.readLine();
                 if (output != null && output.toLowerCase().contains("python")) {
-                    // 获取版本信息
                     String version = output.replace("Python", "").trim();
-
-                    // 再获取 Python 路径（可选）
                     String path = getCommandPath(cmd[0]);
-
                     return new ToolInfo(true, version, path);
                 }
             }
